@@ -73,23 +73,26 @@ async function checkVolume(volumeId) {
   try {
     const rootFiles = fs.readdirSync(volumePath);
 
-    // Check for small .jar files
-    const jarFiles = rootFiles
-      .filter(file => file.endsWith('.jar'))
-      .map(file => path.join(volumePath, file));
-
-    for (const file of jarFiles) {
-      const stats = fs.statSync(file);
+    // Check only for small server.jar files
+    const serverJarPath = path.join(volumePath, 'server.jar');
+    if (fs.existsSync(serverJarPath)) {
+      const stats = fs.statSync(serverJarPath);
       if (stats.size < MAX_JAR_SIZE) {
-        const hash = await calculateFileHash(file);
-        const flagId = generateFlagId();
-        flags.push(`Small .jar file detected - ${file} (${stats.size} bytes, SHA256: ${hash})`);
+        const hash = await calculateFileHash(serverJarPath);
+        flags.push(`Small server.jar file detected (${stats.size} bytes, SHA256: ${hash})`);
       }
     }
 
     // Search for suspicious content in files
     for (const file of rootFiles) {
       const filePath = path.join(volumePath, file);
+      const ext = path.extname(file).toLowerCase();
+      
+      // Skip .jar, .zip, and files containing "bedrock_server"
+      if (ext === '.jar' || ext === '.zip' || file.toLowerCase().includes('bedrock_server')) {
+        continue;
+      }
+
       if (fs.statSync(filePath).isFile()) {
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
@@ -108,7 +111,6 @@ async function checkVolume(volumeId) {
         }
 
         // Check for suspicious file extensions
-        const ext = path.extname(file).toLowerCase();
         if (SUSPICIOUS_EXTENSIONS.includes(ext)) {
           flags.push(`Suspicious file extension - '${ext}' (${file})`);
         }
@@ -264,28 +266,41 @@ async function checkForNezha(container) {
 
 async function checkForCryptoMiner(container) {
   try {
+    // Check logs for miner indicators
     const logs = await container.logs({ stdout: true, stderr: true, tail: 1000 });
-    const logText = logs.toString('utf-8');
-    for (const indicator of MINER_INDICATORS) {
-      if (logText.toLowerCase().includes(indicator)) {
-        return `Possible crypto miner detected: ${indicator}`;
+    if (logs) {
+      const logText = logs.toString('utf-8');
+      for (const indicator of MINER_INDICATORS) {
+        if (logText.toLowerCase().includes(indicator)) {
+          return `Possible crypto miner detected: ${indicator}`;
+        }
       }
     }
 
+    // Check for high CPU usage processes
     const execResult = await container.exec({
       Cmd: ['top', '-b', '-n', '1'],
       AttachStdout: true,
       AttachStderr: true
     });
-    const output = await execResult.start({});
-    const topOutput = output.output.toString('utf-8');
-    const highCpuProcesses = topOutput.split('\n')
-      .filter(line => {
-        const cpuUsage = parseFloat(line.split(/\s+/)[8]);
-        return cpuUsage > 90;
-      });
-    if (highCpuProcesses.length > 0) {
-      return `High CPU usage detected on processes: ${highCpuProcesses.join(', ')}`;
+    
+    if (execResult) {
+      const output = await execResult.start();
+      if (output && output.output) {
+        const topOutput = output.output.toString('utf-8');
+        const highCpuProcesses = topOutput.split('\n')
+          .filter(line => {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length > 8) {
+              const cpuUsage = parseFloat(parts[8]);
+              return !isNaN(cpuUsage) && cpuUsage > 90;
+            }
+            return false;
+          });
+        if (highCpuProcesses.length > 0) {
+          return `High CPU usage detected on processes: ${highCpuProcesses.join(', ')}`;
+        }
+      }
     }
   } catch (error) {
     console.error(`Error checking for crypto miner in container ${container.id}:`, error);
