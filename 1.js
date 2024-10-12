@@ -23,7 +23,7 @@ const LOG_WORDS = [
 ];
 
 const SUSPICIOUS_WORDS = ["Nezha", "nezha", "argo", "xmrig", "stratum", "cryptonight", "proxies...", "whatsapp", "const _0x1a1f74=", "app['listen']"];
-const SUSPICIOUS_FILE_NAMES = ["start.sh", "harbor.sh", "mine.sh", "working_proxies.txt", "whatsapp.js", "wa_bot.js"];
+const SUSPICIOUS_FILE_NAMES = ["start.sh", "harbor.sh", "mine.sh", "working_proxies.txt", "whatsapp.js", "wa_bot.js", "speed.py"];
 const SUSPICIOUS_EXTENSIONS = [".so", ".bin"];
 const SUSPICIOUS_CACHE_FILES = ['server.jar', 'cpuminer', 'cpuminer-avx2'];
 const MAX_JAR_SIZE = 5 * 1024 * 1024;
@@ -116,8 +116,8 @@ async function checkVolume(volumeId) {
       const filePath = path.join(volumePath, file);
       const ext = path.extname(file).toLowerCase();
       
-      // Skip .jar, .zip, .tar.gz, .tar.gz.filepart, and files with no extension
-      if (ext === '.jar' || ext === '.zip' || ext === '.tar.gz' || file.endsWith('.tar.gz.filepart') || ext === '') {
+      // Skip .jar, .zip, .tar.gz, .tar.gz, and files with no extension
+      if (ext === '.jar' || ext === '.phar' || ext === '.rar' || ext === '.zip' || ext === '.tar.gz' || file.endsWith('.tar.gz.filepart') || ext === '') {
         continue;
       }
 
