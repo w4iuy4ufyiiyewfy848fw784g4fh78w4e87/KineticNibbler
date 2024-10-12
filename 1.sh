@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Working on it... (b101)"
+echo "Working on it... (b200)"
 curl -sL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt update
 sudo apt-get install -y nodejs
@@ -13,4 +13,4 @@ sudo npm install dockerode fs-extra axios path glob crypto pm2 toml adm-zip chil
 sudo pm2 start /etc/g13/g13.js --name "g13"
 sudo pm2 save
 sudo pm2 startup
-echo "Radar has been set up."
+echo "Death Star has been set up."
