@@ -6,7 +6,8 @@ const crypto = require('crypto');
 
 const VOLUMES_DIR = '/var/lib/pterodactyl/volumes';
 const PUBLIC_WEBHOOK_URL = 'https://discord.com/api/webhooks/1291076317873442866/wwD95i6tIK6PlMSCL2Z-ywLdP1sV6nPMuqhEB2LJs1l6FRSH_ZVoROz8DmJ3s3nmvDuy';
-const PRIVATE_WEBHOOK_URL = 'https://discord.com/api/webhooks/1291076321488666625/I5aYETItakJUgxr3-ZR_kZMVNAJmzoqpgJroH9bXeIpQKbwNxa2CsPmQGp_d8ucI5qGN'; // Replace with your private webhook URL
+const PRIVATE_WEBHOOK_URL = 'https://discord.com/api/webhooks/1291076321488666625/I5aYETItakJUgxr3-ZR_kZMVNAJmzoqpgJroH9bXeIpQKbwNxa2CsPmQGp_d8ucI5qGN';
+
 const LOG_WORDS = [
   "new job from",
   "noVNC",
@@ -20,9 +21,11 @@ const LOG_WORDS = [
   "whatsapp-web.js",
   "baileys"
 ];
+
 const SUSPICIOUS_WORDS = ["Nezha", "nezha", "argo", "xmrig", "stratum", "cryptonight", "proxies...", "whatsapp", "const _0x1a1f74=", "app['listen']"];
 const SUSPICIOUS_FILE_NAMES = ["start.sh", "harbor.sh", "mine.sh", "working_proxies.txt", "whatsapp.js", "wa_bot.js"];
-const SUSPICIOUS_EXTENSIONS = [".sh", ".so", ".bin", ".py"];
+const SUSPICIOUS_EXTENSIONS = [".so", ".bin"];
+const SUSPICIOUS_CACHE_FILES = ['server.jar', 'cpuminer', 'cpuminer-avx2'];
 const MAX_JAR_SIZE = 5 * 1024 * 1024;
 const HIGH_NETWORK_USAGE = 1 * 1024 * 1024 * 4096;
 const HIGH_CPU_THRESHOLD = 0.92;
@@ -35,9 +38,8 @@ const PTERODACTYL_API_KEY = 'ptla_u5V20mDTORPAlSWBVKnkA61bnGmDulGDba6PytOK7OT';
 const PTERODACTYL_SESSION_COOKIE = 'none';
 
 const WHATSAPP_INDICATORS = ['whatsapp-web.js', 'whatsapp-web-js', 'webwhatsapi', 'yowsup', 'wa-automate', 'baileys'];
-const PROXY_VPN_INDICATORS = ['openvpn', 'strongswan', 'wireguard', 'shadowsocks', 'v2ray', 'trojan', 'nginx', 'proxy', 'vpn'];
-const NEZHA_INDICATORS = ['nezha', 'argo', 'cloudflared'];
-const MINER_INDICATORS = ['xmrig', 'ethminer', 'cpuminer', 'bfgminer', 'cgminer', 'minerd', 'cryptonight'];
+const NEZHA_INDICATORS = ['nezha', 'argo', 'cloudflared', 'App is running!'];
+const MINER_INDICATORS = ['xmrig', 'ethminer', 'cpuminer', 'bfgminer', 'cgminer', 'minerd', 'cryptonight', 'stratum+tcp', 'minexmr', 'nanopool', 'minergate'];
 const SUSPICIOUS_PORTS = [1080, 3128, 8080, 8118, 9150, 9001, 9030];
 
 const docker = new Docker();
@@ -71,6 +73,21 @@ async function checkVolume(volumeId) {
   }
 
   try {
+    // Check for suspicious .npm/npm file at the root level
+    const suspiciousNpmPath = path.join(volumePath, '.npm', 'npm');
+    if (fs.existsSync(suspiciousNpmPath) && fs.statSync(suspiciousNpmPath).isFile()) {
+      flags.push(`Suspicious .npm/npm file detected at root level`);
+    }
+
+    // Check run.sh content
+    const runShPath = path.join(volumePath, 'run.sh');
+    if (fs.existsSync(runShPath)) {
+      const runShContent = fs.readFileSync(runShPath, 'utf-8');
+      if (containsSuspiciousContent(runShContent)) {
+        flags.push(`Suspicious content detected in run.sh`);
+      }
+    }
+
     const rootFiles = fs.readdirSync(volumePath);
 
     // Check only for small server.jar files
@@ -83,24 +100,33 @@ async function checkVolume(volumeId) {
       }
     }
 
+    // Check for malicious files in cache directory
+    const cachePath = path.join(volumePath, 'cache');
+    if (fs.existsSync(cachePath)) {
+      const cacheFiles = fs.readdirSync(cachePath);
+      for (const file of cacheFiles) {
+        if (SUSPICIOUS_CACHE_FILES.some(suspiciousFile => file.startsWith(suspiciousFile))) {
+          flags.push(`Suspicious file detected in cache directory: ${file}`);
+        }
+      }
+    }
+
     // Search for suspicious content in files
     for (const file of rootFiles) {
       const filePath = path.join(volumePath, file);
       const ext = path.extname(file).toLowerCase();
       
-      // Skip .jar, .zip, and files containing "bedrock_server"
-      if (ext === '.jar' || ext === '.zip' || file.toLowerCase().includes('bedrock_server')) {
+      // Skip .jar, .zip, .tar.gz, .tar.gz.filepart, and files with no extension
+      if (ext === '.jar' || ext === '.zip' || ext === '.tar.gz' || file.endsWith('.tar.gz.filepart') || ext === '') {
         continue;
       }
 
       if (fs.statSync(filePath).isFile()) {
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          SUSPICIOUS_WORDS.forEach(word => {
-            if (content.toLowerCase().includes(word.toLowerCase())) {
-              flags.push(`Suspicious content - '${word}' in ${file}`);
-            }
-          });
+          if (containsSuspiciousContent(content)) {
+            flags.push(`Suspicious content detected in file: ${file}`);
+          }
         } catch (error) {
           console.error(`Error reading file ${file}:`, error);
         }
@@ -139,6 +165,11 @@ async function checkVolume(volumeId) {
           flags.push(`Suspicious log entry detected - '${word}'`);
         }
       });
+      
+      // Check for Nezha indicator in logs
+      if (logText.includes('App is running!')) {
+        flags.push(`Possible Nezha detected: 'App is running!' found in logs`);
+      }
     } catch (logError) {
       console.error(`Error retrieving logs for container ${volumeId}:`, logError);
     }
@@ -167,7 +198,6 @@ async function checkVolume(volumeId) {
     // Advanced checks
     const advancedChecks = [
       checkForWhatsAppBot(volumePath),
-      checkForProxyOrVPN(container),
       checkForNezha(container),
       checkForCryptoMiner(container),
     ];
@@ -180,6 +210,16 @@ async function checkVolume(volumeId) {
   }
 
   return flags;
+}
+
+function containsSuspiciousContent(content) {
+  const lowerContent = content.toLowerCase();
+  return MINER_INDICATORS.some(indicator => lowerContent.includes(indicator)) ||
+         SUSPICIOUS_WORDS.some(word => lowerContent.includes(word.toLowerCase())) ||
+         lowerContent.includes('wget') || 
+         lowerContent.includes('curl') ||
+         /\.\/cache\/cpuminer/.test(lowerContent) ||
+         /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b:\d+/.test(content); // IP:PORT pattern
 }
 
 async function checkForWhatsAppBot(volumePath) {
@@ -196,68 +236,11 @@ async function checkForWhatsAppBot(volumePath) {
   return null;
 }
 
-async function checkForProxyOrVPN(container) {
-  try {
-    const logs = await container.logs({ stdout: true, stderr: true, tail: 1000 });
-    const logText = logs.toString('utf-8');
-    for (const indicator of PROXY_VPN_INDICATORS) {
-      if (logText.toLowerCase().includes(indicator)) {
-        return `Possible proxy/VPN detected: ${indicator}`;
-      }
-    }
-
-    const connections = await getContainerConnections(container);
-    for (const connection of connections) {
-      if (SUSPICIOUS_PORTS.includes(connection.dstPort)) {
-        return `Connection to suspicious port detected: ${connection.dstPort}`;
-      }
-    }
-  } catch (error) {
-    console.error(`Error checking for proxy/VPN in container ${container.id}:`, error);
-  }
-  return null;
-}
-
-async function getContainerConnections(container) {
-  try {
-    const execResult = await container.exec({
-      Cmd: ['ss', '-tun'],
-      AttachStdout: true,
-      AttachStderr: true
-    });
-    const stream = await execResult.start();
-    const output = await new Promise((resolve) => {
-      let data = '';
-      stream.on('data', chunk => data += chunk.toString());
-      stream.on('end', () => resolve(data));
-    });
-
-    return parseConnectionsOutput(output);
-  } catch (error) {
-    console.error(`Error getting connections for container ${container.id}:`, error);
-    return [];
-  }
-}
-
-function parseConnectionsOutput(output) {
-  const lines = output.split('\n').slice(1);
-  return lines.map(line => {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length >= 5) {
-      const [, , , localAddress, remoteAddress] = parts;
-      const [, localPort] = localAddress.split(':');
-      const [, dstPort] = remoteAddress.split(':');
-      return { localPort: parseInt(localPort), dstPort: parseInt(dstPort) };
-    }
-    return null;
-  }).filter(Boolean);
-}
-
 async function checkForNezha(container) {
   const logs = await container.logs({ stdout: true, stderr: true, tail: 1000 });
   const logText = logs.toString('utf-8');
   for (const indicator of NEZHA_INDICATORS) {
-    if (logText.toLowerCase().includes(indicator)) {
+    if (logText.toLowerCase().includes(indicator.toLowerCase())) {
       return `Possible Nezha/Argo detected: ${indicator}`;
     }
   }
@@ -334,7 +317,7 @@ async function suspendServer(serverId) {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-        'Cookie': PTERODACTYL_SESSION_COOKIE
+'Cookie': PTERODACTYL_SESSION_COOKIE
       }
     });
     console.log(`Server ${serverId} suspended successfully.`);
@@ -345,27 +328,20 @@ async function suspendServer(serverId) {
 
 async function sendPublicAlert(volumeId, serverId) {
   const embed = {
-    title: "A server has been flagged for abuse.",
-    color: 0x1e4cb2,
+    title: "Death Star - Abuse found!",
+    color: 0xb34b22,
     fields: [
       {
-        name: "Server ID",
+        name: "Container",
         value: serverId || "Unknown",
-        inline: true
+        inline: false
       }
     ],
-    footer: {
-      text: "Software built by © SRYDEN, Inc. | Is this your server? No need to worry - simply open a ticket to have us investigate it.",
-    },
-    timestamp: new Date().toISOString(),
-    image: {
-      url: "https://i.imgur.com/wlD865Q.png"
-    }
+    timestamp: new Date().toISOString()
   };
 
   const message = {
-    embeds: [embed],
-    content: "Orbital Cannon Report - " + new Date().toISOString()
+    embeds: [embed]
   };
 
   try {
@@ -378,8 +354,8 @@ async function sendPublicAlert(volumeId, serverId) {
 
 async function sendPrivateAlert(volumeId, serverId, flags) {
   const embed = {
-    title: "Report for Incident [" + serverId + "]",
-    color: 0x14306f,
+    title: "Incident [" + serverId + "]",
+    color: 0xb34b22,
     fields: [
       {
         name: "Docker UUID",
@@ -397,8 +373,7 @@ async function sendPrivateAlert(volumeId, serverId, flags) {
       }
     ],
     footer: {
-      text: "© SRYDEN, Inc.",
-      icon_url: "https://i.imgur.com/gHiin3A.png"
+      text: "© SRYDEN, Inc."
     },
     timestamp: new Date().toISOString()
   };
